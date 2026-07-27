@@ -1,130 +1,110 @@
 import serial
 import RPi.GPIO as GPIO
 from time import sleep
-import numpy as np
-#import matplotlib.pyplot as plt
-import struct
 import datetime
 from datetime import UTC
 import os.path
-from os import listdir, rename, system
+from os import system
 import threading
 import atexit
+from slow_antenna_processing_scripts import sa_common as santa
+import numpy as np
+import gzip
+
+pin_relay_a = 5
+pin_relay_b = 6
+pin_relay_c = 13
+pin_LED = 19
+pin_overflow_buffer = 10
+pin_overflow_serial = 11
+use_relay = 'b'
+mins_before_write = 1
+save_path ='/home/pi/Desktop/DATA/'
+write_success = 0
+bytes_before_write = 5400000*mins_before_write
+SERIAL_SPEED = 2000000
+has_gps_embedded = None
+cpu_id = ''
+with open('/proc/cpuinfo', 'r') as f:
+    cpu_id = f.readlines()[-2].replace('\n', '')[-8:]
 
 def exit_handler():
+    global pin_relay_a
+    global pin_relay_b
+    global pin_relay_c
+    global pin_LED
+    GPIO.output(pin_relay_a, GPIO.LOW)
+    GPIO.output(pin_relay_b, GPIO.LOW)
+    GPIO.output(pin_relay_c, GPIO.LOW)
+    GPIO.output(pin_LED, GPIO.LOW)
     GPIO.cleanup()
 
 atexit.register(exit_handler)
 
-use_relay = 'a'
-mins_before_write = 1
-save_path ='/home/pi/Desktop/DATA/' 
-
 
 def write_file(start_time, bytes_data):
-    global save_path
-    global cpu_id
-    global use_relay
-    global write_success
+    global save_path, cpu_id, use_relay, write_success, has_gps_embedded
+    if has_gps_embedded is None:
+        sa_arr = santa.rotate_SA_array(np.frombuffer(bytes_data, dtype=np.uint8))
+        _, sa_data = santa.decode_SA_array(sa_arr)
+        lowest_bit = (sa_data % 2)
+        total_changes_lsb = np.sum(np.abs(np.diff(lowest_bit)))
+        if total_changes_lsb < (bytes_before_write // 10 // 2 // 3 // 9): # the total number of changes is expected to be around 300000 for 60 seconds of data
+            has_gps_embedded = True
+        elif total_changes_lsb > (bytes_before_write // 10 // 2 // 3):
+            has_gps_embedded = False
     last_gps = 'NO_FIX_2Donly_NaT'
     if os.path.exists('/home/pi/Desktop/last_gps.txt'):
         with open('/home/pi/Desktop/last_gps.txt', 'r') as f:
             last_gps = f.read()
         last_gps_split = last_gps.split('_')
-        try:
-            last_gps_time_offset = (datetime.datetime.now(UTC) - datetime.datetime.strptime(last_gps_split[-1], '%Y-%m-%dT%H:%M:%S').replace(tzinfo=UTC)).total_seconds()
-        except ValueError:
-            last_gps_time_offset = 0
+        if has_gps_embedded is True:
+            last_gps_time_offset = -1
+        else:
+            try:
+                last_gps_time_offset = (datetime.datetime.now(UTC) - datetime.datetime.strptime(last_gps_split[-1], '%Y-%m-%dT%H:%M:%S').replace(tzinfo=UTC)).total_seconds()
+            except ValueError:
+                last_gps_time_offset = 0
         last_gps_split[-1] = f'{last_gps_time_offset:.2f}'
         last_gps = '_'.join(last_gps_split)
-    name = os.path.join(save_path, f'{start_time.strftime("%Y%m%d_%H%M%S_%f")}_{last_gps}_{cpu_id}_{use_relay}.raw')
+    name = os.path.join(save_path, f'{start_time.strftime("%Y%m%d_%H%M%S_%f")}_{last_gps}_{cpu_id}_{use_relay}.raw.gz')
     try:
-        with open(name, mode='wb') as file:
+        with gzip.open(name, mode='wb') as file:
             file.write(bytes_data)
     except OSError as e:
-        system('sudo shutdown -h now')
-    write_success = True
+        if 'No space left on device' in str(e):
+            system('sudo shutdown -h now')
+        else:
+            raise e
+    write_success += 1
+    if write_success == 5:
+        GPIO.output(pin_LED, GPIO.LOW)
     print(f'[{datetime.datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")}] Data collect wrote file: {name}')
 
-cpu_id = ''
-with open('/proc/cpuinfo', 'r') as f:
-    cpu_id = f.readlines()[-2].replace('\n', '')[-8:]
 
-
-
-write_success = False
-for file in reversed(sorted(listdir(save_path))):
-    try:
-        this_file_dt = datetime.datetime.strptime('_'.join(file.split('_')[0:2]), '%Y%m%d_%H%M%S')
-    except Exception as e:
-        print(str(e))
-        continue
-    if this_file_dt.replace(tzinfo=UTC) + datetime.timedelta(seconds=mins_before_write*60) > datetime.datetime.now(UTC) - datetime.timedelta(seconds=mins_before_write*60+30):
-        write_success = True
-        break
-bytes_before_write = 5400000*mins_before_write
-
-def convert_adc_to_decimal(value):
-    modulo = 1 << 24
-    max_value = (1 << 23) - 1
-    if value > max_value:
-        value -= modulo
-    return value
-
-def decode_data_packet(mp):
-
-    result = dict()
-    result['start_byte'] = struct.unpack('B', mp[0:1])[0]
-    result['b1'] = struct.unpack('B', mp[1:2])[0]
-    result['b2'] = struct.unpack('B', mp[2:3])[0]
-    result['b3'] = struct.unpack('B', mp[3:4])[0]
-    result['adc_pps_micros'] = struct.unpack('I', mp[4:8])[0]
-    result['end_byte'] = struct.unpack('B', mp[8:9])[0]
-    adc_hex = mp[1:4].hex()
-    adc_ba = bytearray()
-    adc_ba += mp[1:2]
-    adc_ba += mp[2:3]
-    adc_ba += mp[3:4]
-    adc_ba += b'\x00'
-    
-    #print(mp[3:4])
-    #print(adc_ba)
-    adc_reading = struct.unpack('>i', adc_ba[:])[0]    
-    
-    adc_reading = mp[1]
-    adc_reading = (adc_reading << 8) | mp[2]
-    adc_reading = (adc_reading << 8) | mp[3]
-    adc_reading = convert_adc_to_decimal(adc_reading)
-
-    
-    result['adc_reading'] = adc_reading
-    return result
-    
-SERIAL_SPEED = 2000000
-
-#def do_run(bytes_to_read=972000000):
-def do_run(bytes_to_read=38880000000):
+def do_run():
     global write_success
     global pin_LED_status
     start_time = datetime.datetime.now(UTC)
     print(f'[{start_time.strftime("%Y-%m-%d %H:%M:%S.%f")}] data_collect do_run()!')
     try:
-        ser = serial.Serial('/dev/ttyACM0', SERIAL_SPEED, timeout=1)
+        ser = serial.Serial('/dev/ttyACM0', SERIAL_SPEED, timeout=1, write_timeout=1)
     except Exception as e:
+        # Feather has disconnected from the pi
+        # This is usually water intrusion, so shut down the system to prevent damage
         if 'No such file or directory' in str(e):
             system('sudo shutdown -h now')
-    ser.flush()
-    bytes_read = 0
+    ser.reset_input_buffer()
+    relay_value = {'a' : 0, 'b' : 1, 'c' : 2}[use_relay]
+    payload = np.uint8(relay_value).tobytes() + np.uint64(int(cpu_id, 16)).tobytes()
+    ser.write(payload)
     byte_count_since_last_write = 0
     bytes_data = bytearray()
-    waiting = []
-    while bytes_read < bytes_to_read:
+    while True:
         bytes_available = ser.in_waiting
         s = ser.read(bytes_available)
-        #s = ser.read(1)
         bytes_data += s
-       # byte_count_since_last_write += s
-        if write_success:
+        if (write_success > 0) and (write_success <= 5):
             if pin_LED_status == 1000:
                 GPIO.output(pin_LED, GPIO.LOW)
                 pin_LED_status = -1
@@ -137,82 +117,21 @@ def do_run(bytes_to_read=38880000000):
             byte_count_since_last_write = 0
             print(f'[{datetime.datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")}] Bytes in input buffer: {ser.in_waiting}')
             start_time = datetime.datetime.now(UTC)
-        #bytes_read += 1
-        bytes_read += bytes_available
         byte_count_since_last_write += bytes_available
-        #if (bytes_read % 5000) == 0:
-           
-        #print(bytes_read, bytes_available)    
-        
-    ser.close()
-    return bytes_data
 
 
-pin_relay_a = 5
-pin_relay_b = 6
-pin_relay_c = 13
-pin_LED = 19
-pin_overflow_buffer = 10
-pin_overflow_serial = 11
+if __name__ == "__main__":
+    GPIO.setwarnings(False)
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setup(pin_relay_a, GPIO.OUT)
+    GPIO.setup(pin_relay_b, GPIO.OUT)
+    GPIO.setup(pin_relay_c, GPIO.OUT)
+    GPIO.setup(pin_LED, GPIO.OUT)
 
-GPIO.setmode(GPIO.BCM)
-GPIO.setup(pin_relay_a, GPIO.OUT)
-GPIO.setup(pin_relay_b, GPIO.OUT)
-GPIO.setup(pin_relay_c, GPIO.OUT)
-GPIO.setup(pin_LED, GPIO.OUT)
-GPIO.setup(pin_overflow_buffer, GPIO.IN)
-GPIO.setup(pin_overflow_serial, GPIO.IN)
+    GPIO.output(pin_relay_a, GPIO.HIGH) if use_relay == 'a' else GPIO.output(pin_relay_a, GPIO.LOW)
+    GPIO.output(pin_relay_b, GPIO.HIGH) if use_relay == 'b' else GPIO.output(pin_relay_b, GPIO.LOW)
+    GPIO.output(pin_relay_c, GPIO.HIGH) if use_relay == 'c' else GPIO.output(pin_relay_c, GPIO.LOW)
+    GPIO.output(pin_LED, GPIO.LOW)
+    pin_LED_status = 0
 
-
-#ba = bytearray(do_run())
-
-#print(do_run())
-
-GPIO.output(pin_relay_a, GPIO.HIGH) if use_relay == 'a' else GPIO.output(pin_relay_a, GPIO.LOW)
-GPIO.output(pin_relay_b, GPIO.HIGH) if use_relay == 'b' else GPIO.output(pin_relay_b, GPIO.LOW)
-GPIO.output(pin_relay_c, GPIO.HIGH) if use_relay == 'c' else GPIO.output(pin_relay_c, GPIO.LOW)
-GPIO.output(pin_LED, GPIO.LOW)
-pin_LED_status = False
-
-sleep(2)
-ba = do_run()
-#ba = bytearray(ba)
-#print(ba)
-
-data_start_bytes = []
-data_packet_length = 8
-# Determine the valid starting bytes for data packets
-for i in range(len(ba) - data_packet_length):
-    if (ba[i] == 190) and (ba[i+data_packet_length] == 239):
-        data_start_bytes.append(i)
-        
-data_raw_packets = []
-data_packets = []
-
-for sb in data_start_bytes[:-1]:
-    data_raw_packets.append(ba[sb:sb+12])
-    data_packets.append(decode_data_packet(ba[sb:sb+12]))
-
-starts = []
-adc_ready = []
-adc = []
-end = []
-for dp in data_packets:
-    starts.append(dp['start_byte'])
-    adc_ready.append(dp['adc_pps_micros'])
-    adc.append(dp['adc_reading'])
-    end.append(dp['end_byte'])
-starts = np.array(starts)
-adc_ready = np.array(adc_ready)
-adc = np.array(adc)
-end = np.array(end)
-
-# print(adc.shape, adc.dtype)
-delta_t_adc = (adc_ready[-1]-adc_ready[0])*1e-6
-sample_rate = adc_ready.shape[0]/delta_t_adc
-print(f'[{datetime.datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")}] Elapsed time {delta_t_adc:6.3} s with sample rate {sample_rate:6.1f} Hz')
-
-GPIO.output(pin_relay_a, GPIO.LOW)
-GPIO.output(pin_relay_b, GPIO.LOW)
-GPIO.output(pin_relay_c, GPIO.LOW)
-
+    do_run()

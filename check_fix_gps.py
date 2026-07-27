@@ -2,9 +2,6 @@
 # Monitor the GPS and time sync of the slow antenna
 # Created 25 January 2024 by Sam Gardner <samuel.gardner@ttu.edu>
 
-import sys
-import errno
-import json
 from time import sleep
 import datetime
 from datetime import UTC
@@ -12,6 +9,7 @@ import RPi.GPIO as GPIO
 import subprocess
 import gpsd
 import atexit
+from os import remove, rename, chmod, path
 
 def exit_handler():
     GPIO.output(26, GPIO.LOW)
@@ -21,12 +19,20 @@ atexit.register(exit_handler)
 
 # We need to wait a few seconds after a fresh boot for gpsd to figure its life out
 sleep(6)
-current_time = datetime.datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S.%f')
+script_start_time = datetime.datetime.now(UTC)
+current_time = script_start_time.strftime('%Y-%m-%d %H:%M:%S.%f')
 print(f'[{current_time}] Starting scheduled GPS fix...')
 
 
-with open('/home/pi/Desktop/last_gps.txt', 'w') as f:
-    f.write('NO_FIX_2Donly_NaT')
+def write_gps_atomically(gps_str):
+    if path.exists('/home/pi/Desktop/this_gps.txt'):
+        remove('/home/pi/Desktop/this_gps.txt')
+    with open('/home/pi/Desktop/this_gps.txt', 'w') as f:
+        f.write(gps_str)
+    chmod('/home/pi/Desktop/this_gps.txt', 0o666)
+    rename('/home/pi/Desktop/this_gps.txt', '/home/pi/Desktop/last_gps.txt')
+
+write_gps_atomically('NO_FIX_2Donly_NaT')
 
 GPIO.setmode(GPIO.BCM)
 GPIO.setup(26, GPIO.OUT)
@@ -46,7 +52,6 @@ start_data_cmd = ['systemctl', 'start', 'adc_data_collect']
 # Loop indefinitely
 while True:
     current_time = datetime.datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S.%f')
-
     # Get latest NMEA sentence from gpsd
     sentence = gpsd.get_current()
     # Sometimes there can be sentences with empty time data -- filter these out:
@@ -70,18 +75,21 @@ while True:
         lat = sentence.lat
         if sentence.mode == 3:
             alt = sentence.alt
+        else:
+            alt = '2Donly'
         # Grab the received time and convert to a python datetime object
         sentence_time_str = sentence.time[:-5]
         sentence_time = datetime.datetime.strptime(sentence_time_str, '%Y-%m-%dT%H:%M:%S').replace(tzinfo=UTC)
         current_time = datetime.datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S.%f')
         print(f'[{current_time}] GPS packet: {lat}, {lon}, {alt}, {sentence_time_str}, updating clock')
-        with open('/home/pi/Desktop/last_gps.txt', 'w') as f:
-            f.write(f'{lat:.3f}_{lon:.3f}_{alt}_{sentence_time_str}')
-        # Check to make sure chrony is using PPS as a source for time updates
+        # This file needs to be written atomically since data_collect might be reading it at the same time
+        # See https://github.com/wx4stg/Bruning_Slow_Antenna_Software/issues/3 for more details
+        write_gps_atomically(f'{lat:.6f}_{lon:.6f}_{alt}_{sentence_time_str}')
+        # Check to make sure chrony is using GPS as a source for time updates
         while True:
             chrony_task = subprocess.Popen(chrony_cmd, stdout=subprocess.PIPE)
             chrony_task.wait()
-            chrony_out = [l for l in chrony_task.stdout.read().decode('utf-8').split('\n') if 'PPS' in l][0]
+            chrony_out = [l for l in chrony_task.stdout.read().decode('utf-8').split('\n') if 'GPS' in l][0]
             if chrony_out.startswith('#*'):
                 break
             else:
@@ -102,6 +110,7 @@ while True:
                             current_time = datetime.datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S.%f')
                             print(f'[{current_time}] ADC test startup not active, starting data collect!')
                             subprocess.run(start_data_cmd, stdout=subprocess.DEVNULL)
+                            script_start_time = datetime.datetime.now(UTC)
                             GPIO.output(26, GPIO.HIGH)
                             break
                         else:
@@ -116,5 +125,8 @@ while True:
                     sleep(0.25)
         else:
             # ADC data collect already running
-            GPIO.output(26, GPIO.HIGH)
+            if datetime.datetime.now(UTC) - script_start_time < datetime.timedelta(minutes=5):
+                GPIO.output(26, GPIO.HIGH)
+            else:
+                GPIO.output(26, GPIO.LOW) # If the system has been running for more than 5 minutes, turn off the GPS status light
     sleep(5)
