@@ -14,7 +14,7 @@ import gzip
 pin_relay_a = 5
 pin_relay_b = 6
 pin_relay_c = 13
-pin_LED = 19
+pin_LED = 23
 pin_overflow_buffer = 10
 pin_overflow_serial = 11
 use_relay = 'b'

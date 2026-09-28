@@ -11,8 +11,10 @@ import gpsd
 import atexit
 from os import remove, rename, chmod, path
 
+PIN_LED = 8
+
 def exit_handler():
-    GPIO.output(26, GPIO.LOW)
+    GPIO.output(PIN_LED, GPIO.LOW)
     GPIO.cleanup()
 
 atexit.register(exit_handler)
@@ -35,8 +37,8 @@ def write_gps_atomically(gps_str):
 write_gps_atomically('NO_FIX_2Donly_NaT')
 
 GPIO.setmode(GPIO.BCM)
-GPIO.setup(26, GPIO.OUT)
-GPIO.output(26, GPIO.LOW)
+GPIO.setup(PIN_LED, GPIO.OUT)
+GPIO.output(PIN_LED, GPIO.LOW)
 
 # Connect to gpsd instance, init variables, turn off status LED during check
 gpsd.connect()
@@ -62,7 +64,7 @@ while True:
         if last_sentence.time == sentence.time:
             # If the time of the last sentence as over one minute ago, flash the GPS status light at once per 1/4 sec
             if (datetime.datetime.now(UTC) - datetime.datetime.strptime(sentence.time[:-5], '%Y-%m-%dT%H:%M:%S').replace(tzinfo=UTC)).total_seconds() >= 120:
-                GPIO.output(26, not GPIO.input(26))
+                GPIO.output(PIN_LED, not GPIO.input(PIN_LED))
                 alt = '2Donly'
             # Wait 1/4 sec before trying again for a new packet
             sleep(0.25)
@@ -93,7 +95,7 @@ while True:
             if chrony_out.startswith('#*'):
                 break
             else:
-                GPIO.output(26, not GPIO.input(26))
+                GPIO.output(PIN_LED, not GPIO.input(PIN_LED))
                 sleep(1)
         # Now check to see if adc_data_collect needs to be started.
         if subprocess.run(check_data_cmd, stdout=subprocess.DEVNULL).returncode != 0:
@@ -111,7 +113,7 @@ while True:
                             print(f'[{current_time}] ADC test startup not active, starting data collect!')
                             subprocess.run(start_data_cmd, stdout=subprocess.DEVNULL)
                             script_start_time = datetime.datetime.now(UTC)
-                            GPIO.output(26, GPIO.HIGH)
+                            GPIO.output(PIN_LED, GPIO.HIGH)
                             break
                         else:
                             current_time = datetime.datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S.%f')
@@ -126,7 +128,7 @@ while True:
         else:
             # ADC data collect already running
             if datetime.datetime.now(UTC) - script_start_time < datetime.timedelta(minutes=5):
-                GPIO.output(26, GPIO.HIGH)
+                GPIO.output(PIN_LED, GPIO.HIGH)
             else:
-                GPIO.output(26, GPIO.LOW) # If the system has been running for more than 5 minutes, turn off the GPS status light
+                GPIO.output(PIN_LED, GPIO.LOW) # If the system has been running for more than 5 minutes, turn off the GPS status light
     sleep(5)
