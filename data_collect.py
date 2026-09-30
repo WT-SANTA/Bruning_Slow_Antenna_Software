@@ -73,7 +73,7 @@ def write_file(start_time, bytes_data):
             file.write(bytes_data)
     except OSError as e:
         if 'No space left on device' in str(e):
-            system('sudo shutdown -h now')
+            system('shutdown -h now')
         else:
             raise e
     write_success += 1
@@ -93,7 +93,7 @@ def do_run():
         # Feather has disconnected from the pi
         # This is usually water intrusion, so shut down the system to prevent damage
         if 'No such file or directory' in str(e):
-            system('sudo shutdown -h now')
+            system('shutdown -h now')
     ser.reset_input_buffer()
     relay_value = {'a' : 0, 'b' : 1, 'c' : 2}[use_relay]
     payload = np.uint8(relay_value).tobytes() + np.uint64(int(cpu_id, 16)).tobytes()
