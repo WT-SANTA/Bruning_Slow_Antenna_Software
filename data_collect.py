@@ -97,7 +97,10 @@ def do_run():
     ser.reset_input_buffer()
     relay_value = {'a' : 0, 'b' : 1, 'c' : 2}[use_relay]
     payload = np.uint8(relay_value).tobytes() + np.uint64(int(cpu_id, 16)).tobytes()
-    ser.write(payload)
+    try:
+        ser.write(payload)
+    except serial.SerialTimeoutException:
+        print(f'[{datetime.datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")}] Timed out trying to write to feather, proceeding to collect data without telling feather who I am and which relay is energized.')
     byte_count_since_last_write = 0
     bytes_data = bytearray()
     while True:
