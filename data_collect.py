@@ -77,7 +77,7 @@ def write_file(start_time, bytes_data):
         else:
             raise e
     write_success += 1
-    if write_success == 5:
+    if write_success >= 5:
         GPIO.output(pin_LED, GPIO.LOW)
     print(f'[{datetime.datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")}] Data collect wrote file: {name}')
 

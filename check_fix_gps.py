@@ -92,7 +92,7 @@ while True:
             chrony_task = subprocess.Popen(chrony_cmd, stdout=subprocess.PIPE)
             chrony_task.wait()
             chrony_out = [l for l in chrony_task.stdout.read().decode('utf-8').split('\n') if 'GPS' in l][0]
-            if chrony_out.startswith('#*'):
+            if chrony_out.startswith('#*') or chrony_out.startswith('#x'):
                 break
             else:
                 GPIO.output(PIN_LED, not GPIO.input(PIN_LED))
