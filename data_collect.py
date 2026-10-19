@@ -15,6 +15,7 @@ pin_relay_a = 5
 pin_relay_b = 6
 pin_relay_c = 13
 pin_LED = 23
+bytes_per_flash = 10000
 pin_overflow_buffer = 10
 pin_overflow_serial = 11
 use_relay = 'b'
@@ -77,14 +78,11 @@ def write_file(start_time, bytes_data):
         else:
             raise e
     write_success += 1
-    if write_success >= 5:
-        GPIO.output(pin_LED, GPIO.LOW)
     print(f'[{datetime.datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")}] Data collect wrote file: {name}')
 
 
 def do_run():
     global write_success
-    global pin_LED_status
     start_time = datetime.datetime.now(UTC)
     print(f'[{start_time.strftime("%Y-%m-%d %H:%M:%S.%f")}] data_collect do_run()!')
     try:
@@ -103,17 +101,19 @@ def do_run():
         print(f'[{datetime.datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")}] Timed out trying to write to feather, proceeding to collect data without telling feather who I am and which relay is energized.')
     byte_count_since_last_write = 0
     bytes_data = bytearray()
+    pin_LED_status = 0
+    led_done = False
     while True:
         bytes_available = ser.in_waiting
         s = ser.read(bytes_available)
         bytes_data += s
-        if (write_success > 0) and (write_success <= 5):
-            if pin_LED_status == 1000:
+        if (write_success > 0) and not led_done:
+            if write_success >= 5:
                 GPIO.output(pin_LED, GPIO.LOW)
-                pin_LED_status = -1
-            elif pin_LED_status == 500:
-                GPIO.output(pin_LED, GPIO.HIGH)
-            pin_LED_status += 1
+                led_done = True
+            else:
+                pin_LED_status = (pin_LED_status + bytes_available) % bytes_per_flash
+                GPIO.output(pin_LED, pin_LED_status >= bytes_per_flash // 2)
         if (byte_count_since_last_write >= bytes_before_write): #27000000):
             threading.Thread(target=write_file, args=(start_time, bytes_data)).start()
             bytes_data = bytearray()
@@ -135,6 +135,5 @@ if __name__ == "__main__":
     GPIO.output(pin_relay_b, GPIO.HIGH) if use_relay == 'b' else GPIO.output(pin_relay_b, GPIO.LOW)
     GPIO.output(pin_relay_c, GPIO.HIGH) if use_relay == 'c' else GPIO.output(pin_relay_c, GPIO.LOW)
     GPIO.output(pin_LED, GPIO.LOW)
-    pin_LED_status = 0
 
     do_run()
